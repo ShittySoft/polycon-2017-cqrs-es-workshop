@@ -12,6 +12,8 @@ use Bernard\QueueFactory\PersistentFactory;
 use Building\Domain\Aggregate\Building;
 use Building\Domain\Command;
 use Building\Domain\DomainEvent\CheckInAnomalyDetected;
+use Building\Domain\DomainEvent\UserCheckedIn;
+use Building\Domain\DomainEvent\UserCheckedOut;
 use Building\Domain\Repository\BuildingRepositoryInterface;
 use Building\Infrastructure\Repository\BuildingRepository;
 use Doctrine\DBAL\Connection;
@@ -32,6 +34,7 @@ use Prooph\EventStore\Adapter\PayloadSerializer\JsonPayloadSerializer;
 use Prooph\EventStore\Aggregate\AggregateRepository;
 use Prooph\EventStore\Aggregate\AggregateType;
 use Prooph\EventStore\EventStore;
+use Prooph\EventStore\Stream\StreamName;
 use Prooph\EventStoreBusBridge\EventPublisher;
 use Prooph\EventStoreBusBridge\TransactionManager;
 use Prooph\ServiceBus\Async\MessageProducer;
@@ -209,15 +212,6 @@ return new ServiceManager([
                     ->checkInUser($command->username());
             };
         },
-        Command\CheckInUser::class => function (ContainerInterface $container) : callable {
-            $buildings = $container->get(BuildingRepositoryInterface::class);
-
-            return function (Command\CheckInUser $command) use ($buildings) {
-                $buildings
-                    ->get($command->buildingId())
-                    ->checkInUser($command->username());
-            };
-        },
         Command\CheckOutUser::class => function (ContainerInterface $container) : callable {
             $buildings = $container->get(BuildingRepositoryInterface::class);
 
@@ -235,6 +229,48 @@ return new ServiceManager([
                     $command->username()
                 ));
             };
+        },
+        'project-existing-users-into-json' => function (ContainerInterface $container) : callable {
+            $eventStore = $container->get(EventStore::class);
+
+            return function () use ($eventStore) {
+                $pastEvents = $eventStore
+                    ->loadEventsByMetadataFrom(
+                        new StreamName('event_stream'),
+                        [
+                            'aggregate_type' => Building::class,
+                        ]
+                    );
+
+                $usersInBuildings = [];
+
+                foreach ($pastEvents as $pastEvent) {
+                    if ($pastEvent instanceof UserCheckedIn) {
+                        $usersInBuildings[$pastEvent->aggregateId()][$pastEvent->username()] = null;
+                    }
+
+                    if ($pastEvent instanceof UserCheckedOut) {
+                        unset($usersInBuildings[$pastEvent->aggregateId()][$pastEvent->username()]);
+                    }
+                }
+
+                \array_walk($usersInBuildings, function (array $users, string $buildingId) {
+                    \file_put_contents(
+                        __DIR__ . '/public/building-' . $buildingId . '.json',
+                        \json_encode(\array_keys($users))
+                    );
+                });
+            };
+        },
+        UserCheckedIn::class . '-projectors' => function (ContainerInterface $container) : array {
+            return [
+                $container->get('project-existing-users-into-json'),
+            ];
+        },
+        UserCheckedOut::class . '-projectors' => function (ContainerInterface $container) : array {
+            return [
+                $container->get('project-existing-users-into-json'),
+            ];
         },
         CheckInAnomalyDetected::class . '-listeners' => function (ContainerInterface $container) : array {
             $commandBus = $container->get(CommandBus::class);
