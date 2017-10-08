@@ -15,6 +15,7 @@ use Building\Domain\DomainEvent\CheckInAnomalyDetected;
 use Building\Domain\DomainEvent\UserCheckedIn;
 use Building\Domain\DomainEvent\UserCheckedOut;
 use Building\Domain\Repository\BuildingRepositoryInterface;
+use Building\Domain\Restriction\AllowedToCheckIn;
 use Building\Infrastructure\Repository\BuildingRepository;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Driver\PDOSqlite\Driver;
@@ -209,7 +210,16 @@ return new ServiceManager([
             return function (Command\CheckInUser $command) use ($buildings) {
                 $buildings
                     ->get($command->buildingId())
-                    ->checkInUser($command->username());
+                    ->checkInUser(
+                        $command->username(),
+                        new class implements AllowedToCheckIn
+                        {
+                            public function __invoke(string $username) : bool
+                            {
+                                return $username !== 'realDonaldTrump';
+                            }
+                        }
+                    );
             };
         },
         Command\CheckOutUser::class => function (ContainerInterface $container) : callable {
